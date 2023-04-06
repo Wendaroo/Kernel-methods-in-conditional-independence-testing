@@ -1,0 +1,1542 @@
+```{r}
+#install.packages("CondIndTests")
+#install.packages("GeneralisedCovarianceMeasure")
+#install.packages("ppcor")
+library("CondIndTests")
+library("GeneralisedCovarianceMeasure")
+library("ppcor")
+library("ggplot2")
+library("boot")
+
+
+```
+
+```{r}
+
+##Adding in kernel width based on the median of the data as in RCIT and paper I read.
+##We let GCM cross validate regression parameter lambda (sigma in my essay) as it wants to, but use the same kernel width as KCI
+normalize <- function(mat){
+
+  if (is.null(nrow(mat))){mat = matrix(mat);}
+
+  mat = apply(mat, 2, function(x) if (sd(x)>0){(x - mean(x)) / sd(x)} else{x-mean(x);})
+}
+
+GCM  <- function(X,Y,Z){
+    
+    X=normalize(X);
+    Y=normalize(Y);
+    Z=normalize(Z);
+  
+  if (length(X)>500){
+    width = median(as.vector(dist(cbind(X[1:500],Y[1:500]))));
+    }
+  else {
+    width = median(as.vector(dist(cbind(X,Y))));
+    }
+  gcm.test(X, Y, Z, regr.method = "kernel.ridge", regr.pars = list("sigma" = width))
+    
+}
+
+KCIT <- function(X, Y, Z, GP = FALSE){
+  
+    X=normalize(X);
+    Y=normalize(Y);
+    Z=normalize(Z);
+  
+  if (length(X)>500){
+    width = median(as.vector(dist(cbind(X[1:500],Y[1:500]))));
+    }
+  else {
+    width = median(as.vector(dist(cbind(X,Y))));
+    }
+  KCI(X,Y,Z, gammaApprox = FALSE, width = width, GP = GP)
+  
+}
+
+```
+
+```{r}
+#CONDITIONALLY INDEPENDENT DATA GENERATION PROCEDURES
+
+linear_model <- function(n, p = 1, a = NULL){
+  
+  #Generates X = bZ + e, Y = cZ + e
+  #n = number of datapoints generated, p = dim(Z)
+  #b,c are random vectors of dimension p, each entry ~Unif[-coef_size, coef_size]
+  #error_stdev controls stdev of e
+  #if same_coef==TRUE, set b=c
+  
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  
+  Z <- c()
+  for (i in 1:p){
+    Z <- cbind(Z, rnorm(n))
+  }
+  
+  beta_1 <- runif(n=p, min=-5, max=5)
+  beta_2 <- runif(n=p, min=-5, max=5)
+  
+  X <- Z%*%beta_1 + err_X
+  Y <- Z%*%beta_2 + err_Y
+  vars <- list(X, Y, Z)
+  return(vars)
+
+}
+
+
+nonlinear_functions <- list(function(x){return(x^2)},
+                            function(x){return(x^3)},
+                            tanh,
+                            function(x){return(exp(-abs(x)))})
+
+nonlinear_model <- function(n, p = 1, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  
+  Z <- c()
+  for (i in 1:p){
+    Z <- cbind(Z, rnorm(n))
+  }
+  
+  #Selecting random regression function
+  random_nums <- sample(length(nonlinear_functions),2)
+  random_func1 <- nonlinear_functions[[random_nums[[1]]]]
+  random_func2 <- nonlinear_functions[[random_nums[[2]]]]
+  
+  X <- random_func1(rowMeans(Z) + err_X)
+  Y <- random_func2(rowMeans(Z) + err_Y)
+  
+  vars <- list(X, Y, Z)
+  return(vars)
+  
+}
+
+Z_error_model <- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  
+  Z <- rnorm(n)
+  X <- Z*err_X
+  Y <- Z*err_Y
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+
+} 
+
+###TRYING TO SHOW NONUNIFORM CONVERGENCE OF KCI COMPARED TO GCM
+
+wavepacket <- function(x, a){
+  
+  return(exp(-x^2/2)*sin(a*x))
+}
+
+nonconvergent_model1 <- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z <- rnorm(n)
+  
+  X <- wavepacket(Z, 2) + 0.4*err_X
+  Y <- wavepacket(Z, 2) + 0.4*err_Y
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+}
+
+nonconvergent_model2<- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z <- rnorm(n)
+  
+  X <- wavepacket(Z,2)*err_X
+  Y <- wavepacket(Z,2)*err_Y 
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+}
+
+nonconvergent_model3<- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z <- rnorm(n)
+  
+  X <- cos(2*Z)*err_X
+  Y <- cos(2*Z)*err_Y 
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+}
+
+nonconvergent_model4<- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z1 <- rnorm(n)
+  Z2 <- rnorm(n)
+  Z <- cbind(Z1, Z2)
+  
+  X <- (wavepacket(Z1, 2) + wavepacket(Z2, 2))*err_X
+  Y <- (wavepacket(Z1, 2) - wavepacket(Z2, 2))*err_Y
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+}
+
+
+```
+
+
+```{r}
+#CONDITIONALLY DEPENDENT DATA GENERATION PROCEDURES
+
+linear_model2 <- function(n, p = 1, a = NULL){
+  
+  #Generates X = bZ + e, Y = cZ + e
+  #n = number of datapoints generated, p = dim(Z)
+  #b,c are random vectors of dimension p, each entry ~Unif[-coef_size, coef_size]
+  #error_stdev controls stdev of e
+  #if same_coef==TRUE, set b=c
+  
+  err_X <- error_stdev*rnorm(n)
+  err_Y <- error_stdev*rnorm(n)
+  err <- error_stdev*0.7*rnorm(n)
+  
+  Z <- c()
+  for (i in 1:p){
+    Z <- cbind(Z, rnorm(n))
+  }
+  
+  beta_1 <- runif(n=p, min=-5, max=5)
+  beta_2 <- runif(n=p, min=-5, max=5)
+  
+  X <- Z%*%beta_1 + err_X + err
+  Y <- Z%*%beta_2 + err_Y + err
+  vars <- list(X, Y, Z)
+  return(vars)
+
+}
+
+nonlinear_model2 <- function(n, p = 1, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <-rnorm(n)
+  err <- 0.7*rnorm(n)
+  
+  Z <- c()
+  for (i in 1:p){
+    Z <- cbind(Z, rnorm(n))
+  }
+  
+  #Selecting random regression function
+  random_nums <- sample(length(nonlinear_functions),2)
+  random_func1 <- nonlinear_functions[[random_nums[[1]]]]
+  random_func2 <- nonlinear_functions[[random_nums[[2]]]]
+  
+  X <- random_func1(rowMeans(Z) + err_X + err)
+  Y <- random_func2(rowMeans(Z) + err_Y + err)
+  
+  vars <- list(X, Y, Z)
+  return(vars)
+  
+}
+
+
+zero_cond_covariance1 <- function(n, p = NULL, a = NULL){
+  Z <- rnorm(n)
+  U <- runif(n, min = -1, max = 1)
+  X <- U*Z
+  Y <- X^2 + Z
+  vars <- list(X, Y, Z)
+  return(vars)
+}
+
+zero_cond_covariance2 <- function(n, p = NULL, a = NULL){
+  Z <- rnorm(n)
+  U <- runif(n, min = 0, max = 2*pi)
+  Y <- Z*sin(U)
+  X <- Z*cos(U)
+  vars <- list(X,Y,Z)
+  return(vars)
+}
+
+zero_cond_covariance3 <- function(n,p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z <- rnorm(n)
+  X <- Z*sinh(err_X)
+  Y <- cos(X) + err_Y 
+  vars <- list(X, Y, Z)
+  return(vars)
+}
+
+zero_cond_covariance4 <- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  Z <- rnorm(n)
+  X <- Z^3*sin(err_X)
+  Y <- exp(-X^2)*cos(X)
+  vars <- list(X, Y, Z)
+  return(vars)
+}
+
+
+Z_error_model2 <- function(n, p = NULL, a = NULL){
+  err_X <- rnorm(n)
+  err_Y <- rnorm(n)
+  err <- 0.7*rnorm(n)
+  
+  Z <- rnorm(n)
+  X <- Z*(err_X + err)
+  Y <- Z*(err_Y + err)
+  
+  vars <- list(X,Y,Z)
+  
+  return(vars)
+
+} 
+
+
+```
+
+
+
+```{r}
+
+#Generates 100 sets of n datapoints using the data generation procedure func, and generates p values and cpu times
+#for KCI, GCM and pcor for each of the 100 sets. p is the dimension of Z, a is now a depreciated parameter which has no influence.
+simulate <- function(N = 100, n, func, p = 1, a = NULL){
+  p_values_KCI <- c()
+  p_values_GCM <- c()
+  p_values_pcor <- c()
+  
+  KCI_times <- c()
+  GCM_times <- c()
+  pcor_times <- c()
+  
+  for (i in 1:N){
+    
+    if( i %% 5 == 0){
+      print(i)
+    }
+    
+    vars <- func(n, p, a)
+    X <- vars[[1]]
+    Y <- vars[[2]]
+    Z <- vars[[3]]
+    
+    #KCI
+    KCI_start_time <- Sys.time()
+    KCI_result <- KCIT(X, Y, Z, GP = FALSE)
+    KCI_end_time <- Sys.time()
+    KCI_times <- c(KCI_times, KCI_end_time - KCI_start_time)
+    p_values_KCI <- c(p_values_KCI, KCI_result$pvalue)
+    
+    #GCM
+    GCM_start_time <- Sys.time()
+    GCM_result <- GCM(X, Y, Z)
+    GCM_end_time <- Sys.time()
+    GCM_times <- c(GCM_times, GCM_end_time - GCM_start_time)
+    p_values_GCM <- c(p_values_GCM, GCM_result$p.value)
+    
+    #PCOR
+    pcor_start_time <- Sys.time()
+    pcor_result <- pcor.test(X, Y, Z)
+    pcor_end_time <- Sys.time()
+    pcor_times <- c(pcor_times, pcor_end_time - pcor_start_time)
+    p_values_pcor <- c(p_values_pcor, pcor_result$p.value)
+  }
+  
+  output <- list(p_values_KCI, p_values_GCM, p_values_pcor, KCI_times, GCM_times, pcor_times)
+  return(output)
+}
+
+#same as function simulate, but only uses KCI with GP regression to generate p values.
+simulateGP <- function(N = 100, n, func, p = 1, a = NULL){
+  p_values_KCI <- c()
+  KCI_times <- c()
+  
+  for (i in 1:N){
+    
+    if( i %% 5 == 0){
+      print(i)
+    }
+    
+    vars <- func(n, p, a)
+    X <- vars[[1]]
+    Y <- vars[[2]]
+    Z <- vars[[3]]
+    
+    #KCI
+    KCI_start_time <- Sys.time()
+    KCI_result <- KCIT(X, Y, Z, GP = TRUE)
+    KCI_end_time <- Sys.time()
+    KCI_times <- c(KCI_times, KCI_end_time - KCI_start_time)
+    p_values_KCI <- c(p_values_KCI, KCI_result$pvalue)
+  }
+  output <- list(p_values_KCI, KCI_times)
+  return(output)
+}
+
+```
+
+
+
+
+
+```{r}
+#install.packages("DescTools")
+library("DescTools")
+
+#install.packages("gridExtra")
+library("gridExtra")
+
+
+#Computes AUPC of a test given its p values
+AUPC <- function(p_values){
+  x <- c(p_values, 1)
+  y <- c(ecdf(p_values)(p_values), 1)
+  return(AUC(x,y))
+}
+```
+
+
+
+```{r}
+
+
+
+#computes the rejection rate
+rej_rate <- function(p_values, indices){
+  p_values <- p_values[indices]
+  return(sum(p_values <= 0.05)/sum(p_values <=1))
+}
+
+#computes the mean
+my_mean <- function(p_values, indices){
+  return(mean(p_values[indices]))
+}
+
+
+
+#outputs ks statistic, ks p value, rejection rate, cpu time, aupc, and 95% bootstrapped confidence intervals
+diagnostics <- function(p_values, times = NULL, bootstrap = TRUE){
+  
+  n <- length(p_values)
+  kstest <- ks.test(p_values, punif)
+  rejection_rate <- rej_rate(p_values, 1:length(p_values))
+  
+  if (bootstrap){
+    bootstrapped_rejection_rate <- boot(p_values, rej_rate, R = 10000)
+    rejection_CI <- boot.ci(bootstrapped_rejection_rate, type = "bca")
+    rejection_CI <- list(rejection_CI$bca[[4]], rejection_CI$bca[[5]])
+  }
+  else{
+    rejection_CI <- NULL
+  }
+
+  
+  if (!is.null(times)){
+    average_time <- mean(times)
+    
+    if (bootstrap){
+      bootstrapped_average_time <- boot(times, my_mean, R = 10000)
+      time_CI <- boot.ci(bootstrapped_average_time, type = "bca")
+      time_CI <- list(time_CI$bca[[4]], time_CI$bca[[5]])
+    }
+    else{
+      time_CI <- NULL
+    }
+    #ks statistic, ks p value, rejection rate, rejection 95% confidence interval, average time, average time 95%
+    #confidence interval, #AUPC
+    outputs <- list(kstest[[1]], kstest[[2]], rejection_rate, rejection_CI, average_time, time_CI, AUPC(p_values))
+  }
+  else{
+    outputs <- list(kstest[[1]], kstest[[2]], rejection_rate, rejection_CI, NULL, NULL, AUPC(p_values))
+  }
+  return(outputs)
+}
+```
+
+
+```{r}
+#5.2: LINEAR VS NONLINEAR
+
+funcs <- c(linear_model, nonlinear_model, Z_error_model)
+
+#Data matrices we'll store the p values in
+linear_mat <- matrix(0, nrow = 3, ncol = 100)
+nonlinear_mat <- matrix(0, nrow = 3, ncol = 100)
+Zerror_mat <- matrix(0, nrow = 3, ncol = 100)
+
+#Data matrices we'll store rejection rates in
+linear_rej <- matrix(0, nrow = 3, ncol = 3)
+nonlinear_rej <- matrix(0, nrow = 3, ncol = 3)
+Zerror_rej <- matrix(0, nrow = 3, ncol = 3)
+
+#Data matrices we'll store ks statistic and p-value in
+linear_ks <- matrix(0, nrow = 3, ncol = 2)
+nonlinear_ks <- matrix(0, nrow = 3, ncol = 2)
+Zerror_ks <- matrix(0, nrow = 3, ncol = 2)
+
+for (i in c(1,2,3)) {
+  #Simulating p values
+  results <- simulate(100, 200, funcs[[i]])
+  
+  #Computing rejection rates with bootstrapped confidence intervals, and ks statistic
+  type1_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type1_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  type1_resultspcor <- diagnostics(results[[3]], results[[6]])
+  
+  if (i == 1){
+    #p values
+    linear_mat[1,] <- results[[1]]
+    linear_mat[2,] <- results[[2]]
+    linear_mat[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    linear_rej[1,] <- c(type1_resultsKCI[[4]][[1]], type1_resultsKCI[[3]], type1_resultsKCI[[4]][[2]])
+    linear_rej[2,] <- c(type1_resultsGCM[[4]][[1]], type1_resultsGCM[[3]], type1_resultsGCM[[4]][[2]])
+    linear_rej[3,] <- c(type1_resultspcor[[4]][[1]], type1_resultspcor[[3]], type1_resultspcor[[4]][[2]])
+    
+    #ks statistic, and p value
+    linear_ks[1,] <- c(type1_resultsKCI[[1]], type1_resultsKCI[[2]])
+    linear_ks[2,] <- c(type1_resultsGCM[[1]], type1_resultsGCM[[2]])
+    linear_ks[3,] <- c(type1_resultspcor[[1]], type1_resultspcor[[2]])
+  }
+  else if(i==2){
+    #p values
+    nonlinear_mat[1,] <- results[[1]]
+    nonlinear_mat[2,] <- results[[2]]
+    nonlinear_mat[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    nonlinear_rej[1,] <- c(type1_resultsKCI[[4]][[1]], type1_resultsKCI[[3]], type1_resultsKCI[[4]][[2]])
+    nonlinear_rej[2,] <- c(type1_resultsGCM[[4]][[1]], type1_resultsGCM[[3]], type1_resultsGCM[[4]][[2]])
+    nonlinear_rej[3,] <- c(type1_resultspcor[[4]][[1]], type1_resultspcor[[3]], type1_resultspcor[[4]][[2]])
+    
+    #ks statistic, and p value
+    nonlinear_ks[1,] <- c(type1_resultsKCI[[1]], type1_resultsKCI[[2]])
+    nonlinear_ks[2,] <- c(type1_resultsGCM[[1]], type1_resultsGCM[[2]])
+    nonlinear_ks[3,] <- c(type1_resultspcor[[1]], type1_resultspcor[[2]])
+  }
+  else{
+    #p values
+    Zerror_mat[1,] <- results[[1]]
+    Zerror_mat[2,] <- results[[2]]
+    Zerror_mat[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    Zerror_rej[1,] <- c(type1_resultsKCI[[4]][[1]], type1_resultsKCI[[3]], type1_resultsKCI[[4]][[2]])
+    Zerror_rej[2,] <- c(type1_resultsGCM[[4]][[1]], type1_resultsGCM[[3]], type1_resultsGCM[[4]][[2]])
+    Zerror_rej[3,] <- c(type1_resultspcor[[4]][[1]], type1_resultspcor[[3]], type1_resultspcor[[4]][[2]])
+    
+    #ks statistic, and p value
+    Zerror_ks[1,] <- c(type1_resultsKCI[[1]], type1_resultsKCI[[2]])
+    Zerror_ks[2,] <- c(type1_resultsGCM[[1]], type1_resultsGCM[[2]])
+    Zerror_ks[3,] <- c(type1_resultspcor[[1]], type1_resultspcor[[2]])
+  }
+}
+
+```
+
+```{r}
+#Putting the data in a form that ggplot can read
+barcharts <- data.frame(Test = as.factor(c(rep('KCI',100),rep('GCM', 100),rep('pcor',100),rep('KCI',100),rep('GCM', 100),rep('pcor',100), rep('KCI',100),rep('GCM', 100),rep('pcor',100))),
+                        model = as.factor(c(rep('Linear', 300), rep('Nonlinear', 300), rep('Zerror', 300))),
+                        p_values = c(linear_mat[1,], linear_mat[2,], linear_mat[3,], nonlinear_mat[1,], nonlinear_mat[2,], nonlinear_mat[3,], Zerror_mat[1,], Zerror_mat[2,], Zerror_mat[3,]))
+
+rejection_charts <- data.frame(Test = as.factor(c(rep('KCI',3), rep('GCM',3), rep('pcor',3))),
+                               model = as.factor(c('Linear', 'Nonlinear', 'Zerror', 'Linear', 'Nonlinear', 'Zerror', 'Linear', 'Nonlinear', 'Zerror')),
+                               rej_rate = c(linear_rej[1,2], nonlinear_rej[1,2], Zerror_rej[1,2], linear_rej[2,2], nonlinear_rej[2,2], Zerror_rej[2,2], linear_rej[3,2], nonlinear_rej[3,2], Zerror_rej[3,2]), 
+                               lower_rej = c(linear_rej[1,1], nonlinear_rej[1,1], Zerror_rej[1,1], linear_rej[2,1], nonlinear_rej[2,1], Zerror_rej[2,1], linear_rej[3,1], nonlinear_rej[3,1], Zerror_rej[3,1]),
+                               upper_rej = c(linear_rej[1,3], nonlinear_rej[1,3], Zerror_rej[1,3], linear_rej[2,3], nonlinear_rej[2,3], Zerror_rej[2,3], linear_rej[3,3], nonlinear_rej[3,3], Zerror_rej[3,3]))
+```
+
+
+```{r}
+#Constructing the plots and saving
+dat_text <- data.frame(
+  Test = c("KCI", "GCM", "pcor", "KCI", "GCM", "pcor", "KCI", "GCM", "pcor"),
+  model = c("Linear", "Linear", "Linear", "Nonlinear", "Nonlinear", "Nonlinear", "Zerror", "Zerror", "Zerror"),
+  
+  
+  label = c(paste("ks stat = ", toString(round(linear_ks[1,1], 3)), ", ks p-value = ", toString(round(linear_ks[1,2], 3))),
+            paste("ks stat = ", toString(round(linear_ks[2,1],3)), ", ks p-value = ", toString(round(linear_ks[2,2],3))),
+            paste("ks stat = ", toString(round(linear_ks[3,1],3)), ", ks p-value = ", toString(round(linear_ks[3,2],3))),
+            paste("ks stat = ", toString(round(nonlinear_ks[1,1],3)), ", ks p-value = ", toString(round(nonlinear_ks[1,2],3))),
+            paste("ks stat = ", toString(round(nonlinear_ks[2,1],3)), ", ks p-value = ", toString(round(nonlinear_ks[2,2],3))),
+            paste("ks stat = ", toString(round(nonlinear_ks[3,1],3)), ", ks p-value = ", toString(round(nonlinear_ks[3,2],3))),
+            paste("ks stat = ", toString(round(Zerror_ks[1,1],3)), ", ks p-value = ", toString(round(Zerror_ks[1,2],3))),
+            paste("ks stat = ", toString(round(Zerror_ks[2,1],3)), ", ks p-value = ", toString(round(Zerror_ks[2,2],3))),
+            paste("ks stat = ", toString(round(Zerror_ks[3,1],3)), ", ks p-value = ", toString(round(Zerror_ks[3,2],3)))
+            )
+)
+
+g4 <- ggplot(data = barcharts, aes(x = p_values))+ 
+  geom_histogram(binwidth = 0.1, color = "white", boundary = 0) + 
+  labs(x = 'p-values', y = 'Count') + 
+  facet_grid(Test ~ model) + 
+  geom_text(
+    size    = 3,
+    data    = dat_text,
+    mapping = aes(x = Inf, y = Inf, label = label),
+    hjust   = 1.05,
+    vjust   = 1.5
+  )
+g4
+
+
+g5 <- ggplot(data = rejection_charts, aes(x=model, y=rej_rate, fill=Test)) +
+  labs(x = 'Model', y = 'Rejection Rate') + 
+  geom_bar(stat="identity", color="white", position=position_dodge())+
+  theme_minimal() +
+  scale_fill_manual(values=c('#003f5c','#bc5090', '#58508d')) + 
+  geom_errorbar(aes(ymin=lower_rej, ymax=upper_rej), width=.1,
+                 position=position_dodge(.9)) 
+g5
+
+ggsave('linvnon_type1_pvalues.png', g4, 'png')
+ggsave('linvnon_type1_rej.png', g5, 'png')
+```
+
+
+```{r}
+#5.12 LINEAR VS NONLINEAR CONDITIONALLY DEPENDEDENT
+
+funcs2 <- c(linear_model2, nonlinear_model2, Z_error_model2)
+
+#Data matrices we'll store the p values in
+linear_mat2 <- matrix(0, nrow = 3, ncol = 100)
+nonlinear_mat2 <- matrix(0, nrow = 3, ncol = 100)
+Zerror_mat2 <- matrix(0, nrow = 3, ncol = 100)
+
+#Data matrices we'll store rejection rates in
+linear_rej2 <- matrix(0, nrow = 3, ncol = 3)
+nonlinear_rej2 <- matrix(0, nrow = 3, ncol = 3)
+Zerror_rej2 <- matrix(0, nrow = 3, ncol = 3)
+
+#Data matrices we'll store AUPC in
+linear_AUPC <- matrix(0, nrow = 3, ncol = 1)
+nonlinear_AUPC <- matrix(0, nrow = 3, ncol = 1)
+Zerror_AUPC <- matrix(0, nrow = 3, ncol = 1)
+
+for (i in c(1,2,3)) {
+  #Simulating p values
+  results <- simulate(100, 200, funcs2[[i]])
+  
+  #Computing rejection rates with bootstrapped confidence intervals, and ks statistic
+  type2_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type2_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  type2_resultspcor <- diagnostics(results[[3]], results[[6]])
+  
+  if (i == 1){
+    #p values
+    linear_mat2[1,] <- results[[1]]
+    linear_mat2[2,] <- results[[2]]
+    linear_mat2[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    linear_rej2[1,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+    linear_rej2[2,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+    linear_rej2[3,] <- c(type2_resultspcor[[4]][[1]], type2_resultspcor[[3]], type2_resultspcor[[4]][[2]])
+    
+    #AUPC
+    linear_AUPC[1,] <- type2_resultsKCI[[7]]
+    linear_AUPC[2,] <- type2_resultsGCM[[7]]
+    linear_AUPC[3,] <- type2_resultspcor[[7]]
+  }
+  else if(i==2){
+    #p values
+    nonlinear_mat2[1,] <- results[[1]]
+    nonlinear_mat2[2,] <- results[[2]]
+    nonlinear_mat2[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    nonlinear_rej2[1,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+    nonlinear_rej2[2,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+    nonlinear_rej2[3,] <- c(type2_resultspcor[[4]][[1]], type2_resultspcor[[3]], type2_resultspcor[[4]][[2]])
+    
+    #AUPC
+    nonlinear_AUPC[1,] <- type2_resultsKCI[[7]]
+    nonlinear_AUPC[2,] <- type2_resultsGCM[[7]]
+    nonlinear_AUPC[3,] <- type2_resultspcor[[7]]
+  }
+  else{
+    #p values
+    Zerror_mat2[1,] <- results[[1]]
+    Zerror_mat2[2,] <- results[[2]]
+    Zerror_mat2[3,] <- results[[3]]
+    
+    #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+    Zerror_rej2[1,] <- c(type1_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+    Zerror_rej2[2,] <- c(type1_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+    Zerror_rej2[3,] <- c(type1_resultspcor[[4]][[1]], type2_resultspcor[[3]], type2_resultspcor[[4]][[2]])
+    
+    #AUPC
+    Zerror_AUPC[1,] <- type2_resultsKCI[[7]]
+    Zerror_AUPC[2,] <- type2_resultsGCM[[7]]
+    Zerror_AUPC[3,] <- type2_resultspcor[[7]]
+  }
+}
+
+```
+
+
+```{r}
+#Putting data in a format that ggplot can read
+barcharts2 <- data.frame(Test = as.factor(c(rep('KCI',100),rep('GCM', 100),rep('pcor',100),rep('KCI',100),rep('GCM', 100),rep('pcor',100), rep('KCI',100),rep('GCM', 100),rep('pcor',100))),
+                        model = as.factor(c(rep('Linear', 300), rep('Nonlinear', 300), rep('Zerror', 300))),
+                        p_values = c(linear_mat2[1,], linear_mat2[2,], linear_mat2[3,], nonlinear_mat2[1,], nonlinear_mat2[2,], nonlinear_mat2[3,], Zerror_mat2[1,], Zerror_mat2[2,], Zerror_mat2[3,]))
+
+rejection_charts2 <- data.frame(Test = as.factor(c(rep('KCI',3), rep('GCM',3), rep('pcor',3))),
+                               model = as.factor(c('Linear', 'Nonlinear', 'Zerror', 'Linear', 'Nonlinear', 'Zerror', 'Linear', 'Nonlinear', 'Zerror')),
+                               rej_rate = c(linear_rej2[1,2], nonlinear_rej2[1,2], Zerror_rej2[1,2], linear_rej2[2,2], nonlinear_rej2[2,2], Zerror_rej2[2,2], linear_rej2[3,2], nonlinear_rej2[3,2], Zerror_rej2[3,2]), 
+                               lower_rej = c(linear_rej2[1,1], nonlinear_rej2[1,1], Zerror_rej2[1,1], linear_rej2[2,1], nonlinear_rej2[2,1], Zerror_rej2[2,1], linear_rej2[3,1], nonlinear_rej2[3,1], Zerror_rej2[3,1]),
+                               upper_rej = c(linear_rej2[1,3], nonlinear_rej2[1,3], Zerror_rej2[1,3], linear_rej2[2,3], nonlinear_rej2[2,3], Zerror_rej2[2,3], linear_rej2[3,3], nonlinear_rej2[3,3], Zerror_rej2[3,3]))
+```
+
+
+```{r}
+#plotting and saving
+dat_text2 <- data.frame(
+  Test = c("KCI", "GCM", "pcor", "KCI", "GCM", "pcor", "KCI", "GCM", "pcor"),
+  model = c("Linear", "Linear", "Linear", "Nonlinear", "Nonlinear", "Nonlinear", "Zerror", "Zerror", "Zerror"),
+  
+  
+  label = c(paste("AUPC = ", toString(round(linear_AUPC[1,1], 3))),
+            paste("AUPC = ", toString(round(linear_AUPC[2,1],3))),
+            paste("AUPC = ", toString(round(linear_AUPC[3,1],3))),
+            paste("AUPC = ", toString(round(nonlinear_AUPC[1,1],3))),
+            paste("AUPC = ", toString(round(nonlinear_AUPC[2,1],3))),
+            paste("AUPC = ", toString(round(nonlinear_AUPC[3,1],3))),
+            paste("AUPC = ", toString(round(Zerror_AUPC[1,1],3))),
+            paste("AUPC = ", toString(round(Zerror_AUPC[2,1],3))),
+            paste("AUPC = ", toString(round(Zerror_AUPC[3,1],3)))
+            )
+)
+
+g6 <- ggplot(data = barcharts2, aes(x = p_values))+ 
+  geom_histogram(binwidth = 0.05, color = "white", boundary = 0) + 
+  labs(x = 'p-values', y = 'Count') + 
+  facet_grid(Test ~ model) + 
+  geom_text(
+    size    = 3,
+    data    = dat_text2,
+    mapping = aes(x = 1, y = Inf, label = label),
+    hjust   = 1.05,
+    vjust   = 1.5
+  )
+g6
+
+
+g7 <- ggplot(data = rejection_charts2, aes(x=model, y=rej_rate, fill=Test)) +
+  labs(x = 'Model', y = 'Rejection Rate') + 
+  geom_bar(stat="identity", color="white", position=position_dodge())+
+  theme_minimal() +
+  scale_fill_manual(values=c('#003f5c','#bc5090', '#58508d')) + 
+  geom_errorbar(aes(ymin=lower_rej, ymax=upper_rej), width=.1,
+                 position=position_dodge(.9)) 
+g7
+
+ggsave('linvnon_type2_pvalues.png', g6, 'png')
+ggsave('linvnon_type2_rej.png', g7, 'png')
+```
+
+
+
+```{r}
+#5.2: SAMPLE SIZE
+
+#CONDITIONALLY INDEPENDENT TESTS
+
+sizes <- c(10, 50, 100, 200, 500, 800)
+
+#Data matrices we'll store the p values in
+sample_mat <- matrix(0, nrow = 12, ncol = 100)
+
+#rejection rate
+sample_rej <- matrix(0, nrow = 12, ncol = 3)
+
+#ks statistic
+sample_ks <- matrix(0, nrow = 12, ncol = 2)
+
+#cpu time
+sample_cpu <- matrix(0, nrow = 12, ncol = 3)
+
+
+for (i in 1:6) {
+  n <- sizes[[i]]
+  #Simulating p values
+  results <- simulate(100, n, nonlinear_model)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type1_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type1_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  
+  #p values
+  sample_mat[2*i - 1,] <- results[[1]]
+  sample_mat[2*i,] <- results[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  sample_rej[2*i - 1,] <- c(type1_resultsKCI[[4]][[1]], type1_resultsKCI[[3]], type1_resultsKCI[[4]][[2]])
+  sample_rej[2*i,] <- c(type1_resultsGCM[[4]][[1]], type1_resultsGCM[[3]], type1_resultsGCM[[4]][[2]])
+  
+  #lower 95% cpu time, cpu time, and upper 95% cpu time
+  sample_cpu[2*i - 1,] <- c(type1_resultsKCI[[6]][[1]], type1_resultsKCI[[5]], type1_resultsKCI[[6]][[2]])
+  sample_cpu[2*i,] <- c(type1_resultsGCM[[6]][[1]], type1_resultsGCM[[5]], type1_resultsGCM[[6]][[2]])
+  
+  #ks statistic, and p value
+  sample_ks[2*i - 1,] <- c(type1_resultsKCI[[1]], type1_resultsKCI[[2]])
+  sample_ks[2*i,] <- c(type1_resultsGCM[[1]], type1_resultsGCM[[2]])
+}
+
+```
+
+
+```{r}
+#This section is for the purpose of bootstrapping 95% confidence intervals for the ks statistic
+
+#ks statistic
+my_ks_stat <- function(p_values, indices){
+  p <- unique(p_values[indices])
+  ks <- ks.test(p, punif)
+  return(unname(ks[[1]]))
+}
+
+#ks p value
+my_ks_p <- function(p_values, indices){
+  p <- unique(p_values[indices])
+  ks <- ks.test(p, punif)
+  return(unname(ks[[2]]))
+}
+
+#Function that outputs the bootstrapped confidence intervals of the ks statistic and p value.
+ks_bootstrap <- function(p_values){
+  bootstrapped_ks_stat <- boot(p_values, my_ks_stat, R = 1000)
+  bootstrapped_ks_p <- boot(p_values, my_ks_p, R = 1000)
+  ks_stat_CI <- boot.ci(bootstrapped_ks_stat, type = "bca")
+  ks_stat_CI <- list(ks_stat_CI$bca[[4]], ks_stat_CI$bca[[5]])
+  ks_p_CI <- boot.ci(bootstrapped_ks_p, type = "bca")
+  ks_p_CI <- list(ks_p_CI$bca[[4]], ks_p_CI$bca[[5]])
+  
+  return(list(ks_stat_CI, ks_p_CI))
+}
+
+```
+
+```{r}
+
+#Bootstrapping confidence intervals for the ks statistics
+sample_ks_CI <- matrix(0, nrow = 12, ncol = 4)
+
+for (i in 1:12){
+  print(i)
+  bootstrap <- ks_bootstrap(sample_mat[i,])
+  sample_ks_CI[i,] <- c(bootstrap[[1]][[1]], bootstrap[[1]][[2]], bootstrap[[2]][[1]], bootstrap[[2]][[2]])
+}
+
+
+```
+
+
+
+
+```{r}
+
+#Rearranging the data in a way that is compatible with ggplot...
+sample_size_ks_data <- data.frame(Test = as.factor(c(rep("KCI", 6), rep("GCM", 6), rep("KCI", 6), rep("GCM", 6))),
+                                  Statistic = as.factor(c(rep("ks statistic", 12), rep("ks p-value", 12))),
+                                  sample_size = c(10, 50, 100, 200, 500, 800, 10, 50, 100, 200, 500, 800, 10, 50, 100, 200, 500, 800, 10, 50, 100, 200, 500, 800),
+                                  ks = c(sample_ks[1,1], sample_ks[3,1], sample_ks[5,1], sample_ks[7,1], sample_ks[9,1], sample_ks[11,1], sample_ks[2,1], sample_ks[4,1], sample_ks[6,1], sample_ks[8,1], sample_ks[10,1], sample_ks[12,1], sample_ks[1,2], sample_ks[3,2], sample_ks[5,2], sample_ks[7,2], sample_ks[9,2], sample_ks[11,2], sample_ks[2,2], sample_ks[4,2], sample_ks[6,2], sample_ks[8,2], sample_ks[10,2], sample_ks[12,2]),
+                                  lower_ks = c(sample_ks_CI[1,1], sample_ks_CI[3,1], sample_ks_CI[5,1], sample_ks_CI[7,1], sample_ks_CI[9,1], sample_ks_CI[11,1], sample_ks_CI[2,1], sample_ks_CI[4,1], sample_ks_CI[6,1], sample_ks_CI[8,1], sample_ks_CI[10,1], sample_ks_CI[12,1], sample_ks[1,2], sample_ks[3,2], sample_ks[5,2], sample_ks[7,2], sample_ks[9,2], sample_ks[11,2], sample_ks[2,2], sample_ks[4,2], sample_ks[6,2], sample_ks[8,2], sample_ks[10,2], sample_ks[12,2]),
+                                  upper_ks = c(sample_ks_CI[1,2], sample_ks_CI[3,2], sample_ks_CI[5,2], sample_ks_CI[7,2], sample_ks_CI[9,2], sample_ks_CI[11,2], sample_ks_CI[2,2], sample_ks_CI[4,2], sample_ks_CI[6,2], sample_ks_CI[8,2], sample_ks_CI[10,2], sample_ks_CI[12,2], sample_ks[1,2], sample_ks[3,2], sample_ks[5,2], sample_ks[7,2], sample_ks[9,2], sample_ks[11,2], sample_ks[2,2], sample_ks[4,2], sample_ks[6,2], sample_ks[8,2], sample_ks[10,2], sample_ks[12,2])
+                                  )
+
+sample_size_rejtime_data <- data.frame(Test = as.factor(c(rep("KCI", 6), rep("GCM", 6))),
+                                       sample_size = c(10, 50, 100, 200, 500, 800, 10, 50, 100, 200, 500, 800),
+                                       rej_rate = c(sample_rej[1,2], sample_rej[3,2], sample_rej[5,2], sample_rej[7,2], sample_rej[9,2], sample_rej[11,2], sample_rej[2,2], sample_rej[4,2], sample_rej[6,2], sample_rej[8,2], sample_rej[10,2], sample_rej[12,2]),
+                                       lower_rej_rate = c(sample_rej[1,1], sample_rej[3,1], sample_rej[5,1], sample_rej[7,1], sample_rej[9,1], sample_rej[11,1], sample_rej[2,1], sample_rej[4,1], sample_rej[6,1], sample_rej[8,1], sample_rej[10,1], sample_rej[12,1]),
+                                       upper_rej_rate = c(sample_rej[1,3], sample_rej[3,3], sample_rej[5,3], sample_rej[7,3], sample_rej[9,3], sample_rej[11,3], sample_rej[2,3], sample_rej[4,3], sample_rej[6,3], sample_rej[8,3], sample_rej[10,3], sample_rej[12,3]),
+                                       cpu_time = c(sample_cpu[1,2], sample_cpu[3,2], sample_cpu[5,2], sample_cpu[7,2], sample_cpu[9,2], sample_cpu[11,2], sample_cpu[2,2], sample_cpu[4,2], sample_cpu[6,2], sample_cpu[8,2], sample_cpu[10,2], sample_cpu[12,2]),
+                                       lower_cpu_time = c(sample_cpu[1,1], sample_cpu[3,1], sample_cpu[5,1], sample_cpu[7,1], sample_cpu[9,1], sample_cpu[11,1], sample_cpu[2,1], sample_cpu[4,1], sample_cpu[6,1], sample_cpu[8,1], sample_cpu[10,1], sample_cpu[12,1]),
+                                       upper_cpu_time = c(sample_cpu[1,3], sample_cpu[3,3], sample_cpu[5,3], sample_cpu[7,3], sample_cpu[9,3], sample_cpu[11,3], sample_cpu[2,3], sample_cpu[4,3], sample_cpu[6,3], sample_cpu[8,3], sample_cpu[10,3], sample_cpu[12,3])
+                                       )
+```
+
+```{r}
+#plotting and saving
+p1 <- ggplot(sample_size_ks_data, aes(x = sample_size, y = ks, color = Test, linetype = Statistic, shape = Statistic, group = interaction(Test, Statistic))) + 
+   labs(x = 'Sample Size', y = 'K-S Statistic/p-value') + 
+   geom_point(size = 2) +
+   geom_line(size = 0.6) +
+   scale_colour_manual(values = c('#003f5c','#bc5090')) +
+   scale_linetype_manual(values = c('blank','solid')) +
+   scale_shape_manual(values = c(18,16)) +
+   theme(legend.position = "right") +
+   annotate('rect', xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.05, alpha=.5, fill='grey') +
+   geom_hline(yintercept = 0.05, size = 0.3) +
+   geom_errorbar(aes(ymin=lower_ks, ymax=upper_ks),
+                position=position_dodge(.9))
+p1
+
+p2 <- ggplot(sample_size_rejtime_data, aes(x = sample_size, y = cpu_time, color = Test)) + 
+  labs(x = 'Sample Size', y = 'CPU Runtime (s)') +
+  geom_point(size = 2) +
+  stat_smooth(method = "lm",
+              formula = y ~ poly(x, 3),
+              se = FALSE,
+              size = 0.6) +
+  scale_colour_manual(values = c('#003f5c','#bc5090')) +
+  theme(legend.position = "right") +
+  geom_errorbar(aes(ymin=lower_cpu_time, ymax=upper_cpu_time),
+                position=position_dodge(.9))
+p2
+
+p3 <- ggplot(data = sample_size_rejtime_data, aes(x=sample_size, y=rej_rate, color=Test)) +
+  labs(x = 'Sample Size', y = 'Rejection Rate') + 
+  geom_point(size = 2) +
+  geom_line(size = 0.6) +
+  theme(legend.position = "right") +
+  scale_color_manual(values=c('#003f5c','#bc5090')) + 
+  annotate('rect', xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.05, alpha=.5, fill='grey') +
+  geom_hline(yintercept = 0.05, size = 0.3) +
+  geom_errorbar(aes(ymin=lower_rej_rate, ymax=upper_rej_rate),
+                 position=position_dodge(.9)) +
+  ylim(0, 0.5)
+p3
+
+ggsave('samplesize_type1_ks.png', p1, 'png')
+ggsave('samplesize_type1_cpu.png', p2, 'png')
+ggsave('samplesize_type1_rej.png', p3, 'png')
+```
+
+
+```{r}
+#5.2: SAMPLE SIZE
+
+#CONDITIONALLY DEPENDENT TESTS
+
+sizes <- c(10, 50, 100, 200, 500, 800)
+
+#Data matrices we'll store the p values in
+sample_mat2 <- matrix(0, nrow = 12, ncol = 100)
+
+#rejection rate
+sample_rej2 <- matrix(0, nrow = 12, ncol = 3)
+
+#ks statistic
+sample_AUPC <- matrix(0, nrow = 12, ncol = 1)
+
+#cpu time
+sample_cpu2 <- matrix(0, nrow = 12, ncol = 3)
+
+
+for (i in 1:6) {
+  n <- sizes[[i]]
+  #Simulating p values
+  results2 <- simulate(100, n, nonlinear_model2)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type2_resultsKCI <- diagnostics(results2[[1]], results2[[4]])
+  type2_resultsGCM <- diagnostics(results2[[2]], results2[[5]])
+  
+  #p values
+  sample_mat2[2*i - 1,] <- results2[[1]]
+  sample_mat2[2*i,] <- results2[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  sample_rej2[2*i - 1,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+  sample_rej2[2*i,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+  
+  #lower 95% cpu time, cpu time, and upper 95% cpu time
+  sample_cpu2[2*i - 1,] <- c(type2_resultsKCI[[6]][[1]], type2_resultsKCI[[5]], type2_resultsKCI[[6]][[2]])
+  sample_cpu2[2*i,] <- c(type2_resultsGCM[[6]][[1]], type2_resultsGCM[[5]], type2_resultsGCM[[6]][[2]])
+  
+  #ks statistic, and p value
+  sample_AUPC[2*i - 1,] <- type2_resultsKCI[[7]]
+  sample_AUPC[2*i,] <- type2_resultsGCM[[7]]
+}
+```
+
+```{r}
+#This section is for the purpose of bootstrapping 95% confidence intervals for the AUPC
+
+#AUPC function
+my_AUPC <- function(p_values, indices){
+  p_values <- unique(p_values[indices])
+  return(AUPC(p_values))
+}
+
+#AUPC bootstrapped confidence interval
+AUPC_bootstrap <- function(p_values){
+  bootstrapped_AUPC <- boot(p_values, my_AUPC, R = 1000)
+  AUPC_CI <- boot.ci(bootstrapped_AUPC, type = "bca")
+  AUPC_CI <- list(AUPC_CI$bca[[4]], AUPC_CI$bca[[5]])
+  
+  return(AUPC_CI)
+}
+```
+
+```{r}
+#Computing the AUPC confidence intervals
+sample_AUPC_CI <- matrix(0, nrow = 12, ncol = 2)
+
+for (i in 1:12){
+  print(i)
+  bootstrap <- AUPC_bootstrap(sample_mat2[i,])
+  sample_AUPC_CI[i,] <- c(bootstrap[[1]], bootstrap[[2]])
+}
+```
+
+
+
+```{r}
+#Rearranging the data in a way that is compatible with ggplot...
+sample_size_data2 <- data.frame(Test = as.factor(c(rep("KCI", 6), rep("GCM", 6))),
+                                       sample_size = c(10, 50, 100, 200, 500, 800, 10, 50, 100, 200, 500, 800),
+                                       AUPC = c(sample_AUPC[1,], sample_AUPC[3,], sample_AUPC[5], sample_AUPC[7,], sample_AUPC[9,], sample_AUPC[11,], sample_AUPC[2,], sample_AUPC[4,], sample_AUPC[6,], sample_AUPC[8,], sample_AUPC[10,], sample_AUPC[12,]),
+                                       lower_AUPC = c(sample_AUPC_CI[1,1], sample_AUPC_CI[3,1], sample_AUPC_CI[5,1], sample_AUPC_CI[7,1], sample_AUPC_CI[9,1], sample_AUPC_CI[11,1], sample_AUPC_CI[2,1], sample_AUPC_CI[4,1], sample_AUPC_CI[6,1], sample_AUPC_CI[8,1], sample_AUPC_CI[10,1], sample_AUPC_CI[12,1]),
+                                       upper_AUPC = c(sample_AUPC_CI[1,2], sample_AUPC_CI[3,2], sample_AUPC_CI[5,2], sample_AUPC_CI[7,2], sample_AUPC_CI[9,2], sample_AUPC_CI[11,2], sample_AUPC_CI[2,2], sample_AUPC_CI[4,2], sample_AUPC_CI[6,2], sample_AUPC_CI[8,2], sample_AUPC_CI[10,2], sample_AUPC_CI[12,2]),
+                                       rej_rate = c(sample_rej2[1,2], sample_rej2[3,2], sample_rej2[5,2], sample_rej2[7,2], sample_rej2[9,2], sample_rej2[11,2], sample_rej2[2,2], sample_rej2[4,2], sample_rej2[6,2], sample_rej2[8,2], sample_rej2[10,2], sample_rej2[12,2]),
+                                       lower_rej_rate = c(sample_rej2[1,1], sample_rej2[3,1], sample_rej2[5,1], sample_rej2[7,1], sample_rej2[9,1], sample_rej2[11,1], sample_rej2[2,1], sample_rej2[4,1], sample_rej2[6,1], sample_rej2[8,1], sample_rej2[10,1], sample_rej2[12,1]),
+                                       upper_rej_rate = c(sample_rej2[1,3], sample_rej2[3,3], sample_rej2[5,3], sample_rej2[7,3], sample_rej2[9,3], sample_rej2[11,3], sample_rej2[2,3], sample_rej2[4,3], sample_rej2[6,3], sample_rej2[8,3], sample_rej2[10,3], sample_rej2[12,3]),
+                                       cpu_time = c(sample_cpu2[1,2], sample_cpu2[3,2], sample_cpu2[5,2], sample_cpu2[7,2], sample_cpu2[9,2], sample_cpu2[11,2], sample_cpu2[2,2], sample_cpu2[4,2], sample_cpu2[6,2], sample_cpu2[8,2], sample_cpu2[10,2], sample_cpu2[12,2]),
+                                       lower_cpu_time = c(sample_cpu2[1,1], sample_cpu2[3,1], sample_cpu2[5,1], sample_cpu2[7,1], sample_cpu2[9,1], sample_cpu2[11,1], sample_cpu2[2,1], sample_cpu2[4,1], sample_cpu2[6,1], sample_cpu2[8,1], sample_cpu2[10,1], sample_cpu2[12,1]),
+                                       upper_cpu_time = c(sample_cpu2[1,3], sample_cpu2[3,3], sample_cpu2[5,3], sample_cpu2[7,3], sample_cpu2[9,3], sample_cpu2[11,3], sample_cpu2[2,3], sample_cpu2[4,3], sample_cpu2[6,3], sample_cpu2[8,3], sample_cpu2[10,3], sample_cpu2[12,3])
+                                       )
+```
+
+```{r}
+#Plotting and saving
+p1 <- ggplot(sample_size_data2, aes(x = sample_size, y = AUPC, color = Test)) + 
+   labs(x = 'Sample Size', y = 'AUPC') + 
+   geom_point(size = 2) +
+   geom_line(size = 0.6) +
+   scale_colour_manual(values = c('#003f5c','#bc5090')) +
+   theme(legend.position = "right") +
+   geom_errorbar(aes(ymin=lower_AUPC, ymax=upper_AUPC),
+                position=position_dodge(.9))
+p1
+
+p2 <- ggplot(sample_size_data2, aes(x = sample_size, y = cpu_time, color = Test)) + 
+  labs(x = 'Sample Size', y = 'CPU Runtime (s)') +
+  geom_point(size = 2) +
+  stat_smooth(method = "lm",
+              formula = y ~ poly(x, 3),
+              se = FALSE,
+              size = 0.6) +
+  scale_colour_manual(values = c('#003f5c','#bc5090')) +
+  theme(legend.position = "right") +
+  geom_errorbar(aes(ymin=lower_cpu_time, ymax=upper_cpu_time),
+                position=position_dodge(.9))
+p2
+
+p3 <- ggplot(data = sample_size_data2, aes(x=sample_size, y=rej_rate, color=Test)) +
+  labs(x = 'Sample Size', y = 'Rejection Rate') + 
+  geom_point(size = 2) +
+  geom_line(size = 0.6) +
+  theme(legend.position = "right") +
+  scale_color_manual(values=c('#003f5c','#bc5090')) +
+  geom_errorbar(aes(ymin=lower_rej_rate, ymax=upper_rej_rate),
+                 position=position_dodge(.9))
+p3
+
+ggsave('samplesize_type2_AUPC.png', p1, 'png')
+ggsave('samplesize_type2_cpu.png', p2, 'png')
+ggsave('samplesize_type2_rej.png', p3, 'png')
+```
+
+
+
+```{r}
+#5.4 CONDITIONING SIZE
+#CONDITIONALLY INDEPENDENT TESTS
+
+dimension <- c(1,2,4,6)
+
+#Data matrices we'll store the p values in
+dimension_mat <- matrix(0, nrow = 12, ncol = 100)
+
+#rejection rate
+dimension_rej <- matrix(0, nrow = 12, ncol = 3)
+
+#ks statistic
+dimension_ks <- matrix(0, nrow = 12, ncol = 2)
+
+#cpu time
+dimension_cpu <- matrix(0, nrow = 12, ncol = 3)
+
+for (i in 1:4) {
+  p <- dimension[[i]]
+  #Simulating p values
+  results <- simulate(100, 200, nonlinear_model, p)
+  resultsGP <- simulateGP(100, 200, nonlinear_model, p)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type1_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type1_resultsKCIGP <- diagnostics(resultsGP[[1]], resultsGP[[2]])
+  type1_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  
+  #p values
+  dimension_mat[3*i - 2,] <- results[[1]]
+  dimension_mat[3*i - 1,] <- resultsGP[[1]]
+  dimension_mat[3*i,] <- results[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  dimension_rej[3*i - 2,] <- c(type1_resultsKCI[[4]][[1]], type1_resultsKCI[[3]], type1_resultsKCI[[4]][[2]])
+  dimension_rej[3*i - 1,] <- c(type1_resultsKCIGP[[4]][[1]], type1_resultsKCIGP[[3]], type1_resultsKCIGP[[4]][[2]])
+  dimension_rej[3*i,] <- c(type1_resultsGCM[[4]][[1]], type1_resultsGCM[[3]], type1_resultsGCM[[4]][[2]])
+  
+  #lower 95% cpu time, cpu time, and upper 95% cpu time
+  dimension_cpu[3*i - 2,] <- c(type1_resultsKCI[[6]][[1]], type1_resultsKCI[[5]], type1_resultsKCI[[6]][[2]])
+  dimension_cpu[3*i - 1,] <- c(type1_resultsKCIGP[[6]][[1]], type1_resultsKCIGP[[5]], type1_resultsKCIGP[[6]][[2]])
+  dimension_cpu[3*i,] <- c(type1_resultsGCM[[6]][[1]], type1_resultsGCM[[5]], type1_resultsGCM[[6]][[2]])
+  
+  #ks statistic, and p value
+  dimension_ks[3*i - 2,] <- c(type1_resultsKCI[[1]], type1_resultsKCI[[2]])
+  dimension_ks[3*i - 1,] <- c(type1_resultsKCIGP[[1]], type1_resultsKCIGP[[2]])
+  dimension_ks[3*i,] <- c(type1_resultsGCM[[1]], type1_resultsGCM[[2]])
+}
+
+```
+
+```{r}
+#Bootstrapping confidence intervals for the ks statistics
+dimension_ks_CI <- matrix(0, nrow = 12, ncol = 4)
+
+for (i in 1:12){
+  print(i)
+  bootstrap <- ks_bootstrap(dimension_mat[i,])
+  dimension_ks_CI[i,] <- c(bootstrap[[1]][[1]], bootstrap[[1]][[2]])
+}
+```
+
+
+```{r}
+#Rearranging the data in a way that is compatible with ggplot...
+dimension_ks_data <- data.frame(Test = as.factor(c("KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM")),
+                                Statistic = as.factor(c(rep("ks statistic", 12), rep("ks p-value", 12))),
+                                dimension = c(rep(1, 3), rep(2, 3), rep(4, 3), rep(6, 3), rep(1, 3), rep(2, 3), rep(4, 3), rep(6, 3)),
+                                ks = c(dimension_ks[,1], dimension_ks[,2]),
+                                lower_ks = c(dimension_ks_CI[,1], dimension_ks[,1]),
+                                upper_ks = c(dimension_ks_CI[,2], dimension_ks[,2])
+                                  )
+
+dimension_rejtime_data <- data.frame(Test = as.factor(c("KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM")),
+                                    dimension = c(rep(1,3), rep(2,3), rep(4,3), rep(6,3)),
+                                    rej_rate = dimension_rej[,2],
+                                    lower_rej = dimension_rej[,1],
+                                    upper_rej = dimension_rej[,3],
+                                    cpu_time = dimension_cpu[,2],
+                                    lower_cpu = dimension_cpu[,1],
+                                    upper_cpu = dimension_cpu[,3]
+                                       )
+```
+
+```{r}
+#Plotting and saving
+p1 <- ggplot(dimension_ks_data, aes(x = dimension, y = ks, color = Test, linetype = Statistic, shape = Statistic, group = interaction(Test, Statistic))) + 
+   labs(x = 'Z Dimension', y = 'K-S Statistic/p-value') + 
+   geom_point(size = 2.5) +
+   geom_line(size = 0.6) +
+   scale_colour_manual(values = c('#003f5c','#bc5090', '#ffa600')) +
+   scale_linetype_manual(values = c('blank','solid')) +
+   scale_shape_manual(values = c(10,16)) +
+   theme(legend.position = "right") +
+   annotate('rect', xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.05, alpha=.5, fill='grey') +
+   geom_hline(yintercept = 0.05, size = 0.3) +
+   geom_errorbar(aes(ymin=lower_ks, ymax=upper_ks, group = 3),
+                position=position_dodge(.9), width = 0.1)
+p1
+
+p2 <- ggplot(dimension_rejtime_data, aes(x = dimension, y = cpu_time, color = Test)) + 
+  labs(x = 'Z Dimension', y = 'CPU Runtime (s)') +
+  geom_point(size = 2) +
+  geom_line(size = 0.6) +
+  scale_colour_manual(values = c('#003f5c','#bc5090', '#ffa600')) +
+  theme(legend.position = "right") +
+  geom_errorbar(aes(ymin=lower_cpu, ymax=upper_cpu, group = 3),
+                position=position_dodge(.9), width = 0.1)
+p2
+
+p3 <- ggplot(data = dimension_rejtime_data, aes(x=dimension, y=rej_rate, color=Test)) +
+  labs(x = 'Z Dimension', y = 'Rejection Rate') + 
+  geom_point(size = 2) +
+  geom_line(size = 0.6) +
+  theme(legend.position = "right") +
+  scale_color_manual(values=c('#003f5c','#bc5090', '#ffa600')) + 
+  annotate('rect', xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.05, alpha=.5, fill='grey') +
+  geom_hline(yintercept = 0.05, size = 0.3) +
+  geom_errorbar(aes(ymin=lower_rej, ymax=upper_rej, group = 3),
+                 position=position_dodge(.9), width = 0.1) +
+  ylim(0, 0.5)
+p3
+
+ggsave('dimension_type1_ks.png', p1, 'png')
+ggsave('dimension_type1_cpu.png', p2, 'png')
+ggsave('dimension_type1_rej.png', p3, 'png')
+```
+
+```{r}
+#5.4 CONDITIONING SIZE
+#CONDITIONALLY DEPENDENT TESTS
+
+dimension <- c(1,2,4,6)
+
+#Data matrices we'll store the p values in
+dimension_mat2 <- matrix(0, nrow = 12, ncol = 100)
+
+#rejection rate
+dimension_rej2 <- matrix(0, nrow = 12, ncol = 3)
+
+#AUPC
+dimension_AUPC <- matrix(0, nrow = 12, ncol = 1)
+
+#cpu time
+dimension_cpu2 <- matrix(0, nrow = 12, ncol = 3)
+
+for (i in 1:4) {
+  p <- dimension[[i]]
+  #Simulating p values
+  results <- simulate(100, 200, nonlinear_model2, p)
+  resultsGP <- simulateGP(100, 200, nonlinear_model2, p)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type2_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type2_resultsKCIGP <- diagnostics(resultsGP[[1]], resultsGP[[2]])
+  type2_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  
+  #p values
+  dimension_mat2[3*i - 2,] <- results[[1]]
+  dimension_mat2[3*i - 1,] <- resultsGP[[1]]
+  dimension_mat2[3*i,] <- results[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  dimension_rej2[3*i - 2,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+  dimension_rej2[3*i - 1,] <- c(type2_resultsKCIGP[[4]][[1]], type2_resultsKCIGP[[3]], type2_resultsKCIGP[[4]][[2]])
+  dimension_rej2[3*i,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+  
+  #lower 95% cpu time, cpu time, and upper 95% cpu time
+  dimension_cpu2[3*i - 2,] <- c(type2_resultsKCI[[6]][[1]], type2_resultsKCI[[5]], type2_resultsKCI[[6]][[2]])
+  dimension_cpu2[3*i - 1,] <- c(type2_resultsKCIGP[[6]][[1]], type2_resultsKCIGP[[5]], type2_resultsKCIGP[[6]][[2]])
+  dimension_cpu2[3*i,] <- c(type2_resultsGCM[[6]][[1]], type2_resultsGCM[[5]], type2_resultsGCM[[6]][[2]])
+  
+  #AUPC
+  dimension_AUPC[3*i - 2,] <- type2_resultsKCI[[7]]
+  dimension_AUPC[3*i - 1,] <- type2_resultsKCIGP[[7]]
+  dimension_AUPC[3*i,] <- type2_resultsGCM[[7]]
+}
+
+```
+
+```{r}
+#Computing confidence intervals for AUPC
+dimension_AUPC_CI <- matrix(0, nrow = 12, ncol = 2)
+
+for (i in 1:12){
+  print(i)
+  bootstrap <- AUPC_bootstrap(dimension_mat2[i,])
+  dimension_AUPC_CI[i,] <- c(bootstrap[[1]], bootstrap[[2]])
+}
+```
+
+```{r}
+#Rearranging the data in a way that is compatible with ggplot...
+dimension_data2 <- data.frame(Test = as.factor(c("KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM", "KCI", "KCI_GM", "GCM")),
+                                dimension = c(rep(1, 3), rep(2, 3), rep(4, 3), rep(6, 3)),
+                                AUPC = dimension_AUPC[,1],
+                                lower_AUPC = dimension_AUPC_CI[,1],
+                                upper_AUPC = dimension_AUPC_CI[,2],
+                                rej_rate = dimension_rej2[,2],
+                                lower_rej = dimension_rej2[,1],
+                                upper_rej = dimension_rej2[,3],
+                                cpu_time = dimension_cpu2[,2],
+                                lower_cpu = dimension_cpu2[,1],
+                                upper_cpu = dimension_cpu2[,3]
+                                       )
+```
+
+```{r}
+##Plotting and saving
+p1 <- ggplot(dimension_data2, aes(x = dimension, y = AUPC, color = Test)) + 
+   labs(x = 'Z Dimension', y = 'AUPC') + 
+   geom_point(size = 2) +
+   geom_line(size = 0.6) +
+   scale_colour_manual(values = c('#003f5c','#bc5090','#ffa600')) +
+   theme(legend.position = "right") +
+   geom_errorbar(aes(ymin=lower_AUPC, ymax=upper_AUPC, group = 3),
+                position=position_dodge(.9), width = 0.1) +
+   ylim(0.4, 0.9)
+p1
+
+p2 <- ggplot(dimension_data2, aes(x = dimension, y = cpu_time, color = Test)) + 
+  labs(x = 'Z Dimension', y = 'CPU Runtime (s)') +
+  geom_point(size = 2) +
+geom_line(size = 0.6) +
+  scale_colour_manual(values = c('#003f5c','#bc5090','#ffa600')) +
+  theme(legend.position = "right") +
+  geom_errorbar(aes(ymin=lower_cpu, ymax=upper_cpu, group = 3),
+                position=position_dodge(.9), width = 0.1)
+p2
+
+p3 <- ggplot(data = dimension_data2, aes(x=dimension, y=rej_rate, color=Test)) +
+  labs(x = 'Z Dimension', y = 'Rejection Rate') + 
+  geom_point(size = 2) +
+  geom_line(size = 0.6) +
+  theme(legend.position = "right") +
+  scale_color_manual(values=c('#003f5c','#bc5090','#ffa600')) +
+  geom_errorbar(aes(ymin=lower_rej, ymax=upper_rej, group = 3),
+                 position=position_dodge(.9), width= 0.1) +
+  ylim(0.1, 0.7)
+p3
+
+ggsave('dimension_type2_AUPC.png', p1, 'png')
+ggsave('dimension_type2_cpu.png', p2, 'png')
+ggsave('dimension_type2_rej.png', p3, 'png')
+```
+
+```{r}
+#5.5 LOW POWER OF GCM COMPARED TO KCI
+zero_cov_func <- c(zero_cond_covariance1, zero_cond_covariance2, zero_cond_covariance3, zero_cond_covariance4)
+
+#Data matrices we'll store the p values in
+power_mat2 <- matrix(0, nrow = 8, ncol = 100)
+
+#rejection rate
+power_rej2 <- matrix(0, nrow = 8, ncol = 3)
+
+#AUPC
+power_AUPC <- matrix(0, nrow = 8, ncol = 1)
+
+for (i in 1:4) {
+  f <- zero_cov_func[[i]]
+  
+  #Simulating p values
+  results <- simulate(100, 200, f)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type2_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type2_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  
+  #p values
+  power_mat2[2*i - 1,] <- results[[1]]
+  power_mat2[2*i,] <- results[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  power_rej2[2*i - 1,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+  power_rej2[2*i,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+  
+  #AUPC
+  power_AUPC[2*i - 1,] <- type2_resultsKCI[[7]]
+  power_AUPC[2*i,] <- type2_resultsGCM[[7]]
+}
+
+
+
+```
+
+
+```{r}
+#Cofidence intervals for AUPC
+power_AUPC_CI <- matrix(0, nrow = 8, ncol = 2)
+
+for (i in 1:8){
+  print(i)
+  bootstrap <- AUPC_bootstrap(power_mat2[i,])
+  power_AUPC_CI[i,] <- c(bootstrap[[1]], bootstrap[[2]])
+}
+```
+
+
+```{r}
+#Rearranging the data in a way that is compatible with ggplot...
+
+power_pvalues2 <- data.frame(Test = as.factor(c(rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100))),
+                                func = as.factor(c(rep("Cov1", 200), rep("Cov2", 200), rep("Cov3", 200), rep("Cov4", 200))),
+                             p_values = c(power_mat2[1,], power_mat2[2,], power_mat2[3,], power_mat2[4,], power_mat2[5,], power_mat2[6,], power_mat2[7,], power_mat2[8,])
+                                       )
+power_data2 <- data.frame(Test = as.factor(c("KCI", "GCM", "KCI", "GCM", "KCI", "GCM", "KCI", "GCM")),
+                                func = as.factor(c(rep("Cov1", 2), rep("Cov2", 2), rep("Cov3", 2), rep("Cov4", 2))),
+                                AUPC = power_AUPC[,1],
+                                lower_AUPC = c(power_AUPC_CI[,1]),
+                                upper_AUPC = c(power_AUPC_CI[,2]),
+                                rej_rate = c(power_rej2[,2]),
+                                lower_rej = c(power_rej2[,1]),
+                                upper_rej = c(power_rej2[,3])
+                                       ) 
+                                 
+```
+
+```{r}
+#Writing the text for the AUPC above the p value histograms
+dat_text_power <- data.frame(
+  Test = c("KCI", "GCM", "KCI", "GCM", "KCI", "GCM", "KCI", "GCM"),
+  func = c("Cov1", "Cov1", "Cov2", "Cov2", "Cov3", "Cov3", "Cov4", "Cov4"),
+  label = c(paste("AUPC = ", toString(round(power_AUPC[1,], 3)), ", 95% CI = [", toString(round(power_AUPC_CI[1,1], 3)), " , ", toString(round(power_AUPC_CI[1,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[2,],3)), ", 95% CI = [", toString(round(power_AUPC_CI[2,1], 3)), " , ", toString(round(power_AUPC_CI[2,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[3,],3)), ", 95% CI = [", toString(round(power_AUPC_CI[3,1], 3)), " , ", toString(round(power_AUPC_CI[3,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[4,],3)), ", 95% CI = [", toString(round(power_AUPC_CI[4,1], 3)), " , ", toString(round(power_AUPC_CI[4,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[5,],3)), ", 95% CI = [", toString(round(power_AUPC_CI[5,1], 3)), " , ", toString(round(power_AUPC_CI[5,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[6,],3)), ", 95% CI = [", toString(round(power_AUPC_CI[6,1], 3)), " , ", toString(round(power_AUPC_CI[6,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[7,1],3)), ", 95% CI = [", toString(round(power_AUPC_CI[7,1], 3)), " , ", toString(round(power_AUPC_CI[7,2], 3)), "]"),
+            paste("AUPC = ", toString(round(power_AUPC[8,1],3)), ", 95% CI = [", toString(round(power_AUPC_CI[8,1], 3)), " , ", toString(round(power_AUPC_CI[8,2], 3)), "]"))
+)
+```
+
+
+
+```{r}
+#install.packages("ggh4x")
+library("ggh4x")
+
+#Plotting and saving
+s1 <- ggplot(data = power_pvalues2, aes(x = p_values))+ 
+  geom_histogram(binwidth = 0.05, color = "white", boundary = 0) + 
+  labs(x = 'p-values', y = 'Count') + 
+  ggh4x::facet_grid2(func ~ Test, scales = "free_y", independent = "y") + 
+  geom_text(
+    size    = 3,
+    data    = dat_text_power,
+    mapping = aes(x = Inf, y = Inf, label = label),
+    hjust   = 1.05,
+    vjust   = 1.5
+  )
+s1
+ggsave('power_pvalues.png', s1, 'png')
+```
+
+```{r}
+#Plotting and saving
+s2 <- ggplot(data = power_data2, aes(x=func, y=rej_rate, fill=Test)) +
+  labs(x = 'Model', y = 'Rejection Rate') + 
+  geom_bar(stat="identity", color="white", position=position_dodge())+
+  theme_minimal() +
+  scale_fill_manual(values=c('#003f5c','#bc5090')) + 
+  geom_errorbar(aes(ymin=lower_rej, ymax=upper_rej), width=.1,
+                 position=position_dodge(.9)) 
+s2
+ggsave('power_rej.png', s2, 'png')
+```
+
+```{r}
+#SECTION 5.6 TYPE 1 INSTABILITY OF KCI
+
+nonconvergent_func <- c(nonconvergent_model1, nonconvergent_model2, nonconvergent_model3, nonconvergent_model4)
+
+#Data matrices we'll store the p values in
+nonconvergent_mat <- matrix(0, nrow = 8, ncol = 100)
+
+#rejection rate
+nonconvergent_rej <- matrix(0, nrow = 8, ncol = 3)
+
+#ks
+nonconvergent_ks <- matrix(0, nrow = 8, ncol = 4)
+
+for (i in 1:4) {
+  f <- nonconvergent_func[[i]]
+  
+  #Simulating p values
+  results <- simulate(100, 200, f)
+  
+  #Computing rejection rates and cpu time with bootstrapped confidence intervals, and ks statistic
+  type2_resultsKCI <- diagnostics(results[[1]], results[[4]])
+  type2_resultsGCM <- diagnostics(results[[2]], results[[5]])
+  
+  #p values
+  nonconvergent_mat[2*i - 1,] <- results[[1]]
+  nonconvergent_mat[2*i,] <- results[[2]]
+  
+  #lower 95% rejection rate, rejection rate, and upper 95% rejection rate
+  nonconvergent_rej[2*i - 1,] <- c(type2_resultsKCI[[4]][[1]], type2_resultsKCI[[3]], type2_resultsKCI[[4]][[2]])
+  nonconvergent_rej[2*i,] <- c(type2_resultsGCM[[4]][[1]], type2_resultsGCM[[3]], type2_resultsGCM[[4]][[2]])
+  
+  #ks statistic
+  nonconvergent_ks[2*i - 1,  1] <- type2_resultsKCI[[1]]
+  nonconvergent_ks[2*i,  1] <- type2_resultsGCM[[1]]
+  
+  #ks p-value
+  nonconvergent_ks[2*i - 1,  4] <- type2_resultsKCI[[2]]
+  nonconvergent_ks[2*i,  4] <- type2_resultsGCM[[2]]
+  
+  #ks statistic bootstrapped confidence intervals (sometimes there is an error
+  #where a parameter of the bootstrap estimate is infinite, if this happens we just
+  #rerun the bootstrap, unless you have to rerun more than 10 times without success,
+  #in which case halt the program.)
+  
+  counter <- 0
+  cond <- try({
+    bootstrapKCI <- ks_bootstrap(results[[1]])
+    bootstrapGCM <- ks_bootstrap(results[[2]])
+  })
+  
+  while ((class(cond) == "try-error") & (counter <= 10)){
+    cond <- try({
+      bootstrapKCI <- ks_bootstrap(results[[1]])
+      bootstrapGCM <- ks_bootstrap(results[[2]])
+    })
+    counter <- counter + 1
+  }
+  
+  if (counter > 10){
+    stop("lolrip")
+  }
+
+  nonconvergent_ks[2*i - 1,  2] <- bootstrapKCI[[1]][[1]]
+  nonconvergent_ks[2*i - 1,  3] <- bootstrapKCI[[1]][[2]]
+  
+  nonconvergent_ks[2*i,  2] <- bootstrapGCM[[1]][[1]]
+  nonconvergent_ks[2*i,  3] <- bootstrapGCM[[1]][[2]]
+}
+
+```
+
+
+```{r}
+#Rearranging the data in a way that is compatible with ggplot...
+nonconvergent_pvalues <- data.frame(Test = as.factor(c(rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100), rep("KCI",100), rep("GCM",100))),
+                                func = as.factor(c(rep("Nonconv1", 200), rep("Nonconv2", 200), rep("Nonconv3", 200), rep("Nonconv4", 200))),
+                             p_values = c(nonconvergent_mat[1,], nonconvergent_mat[2,], nonconvergent_mat[3,], nonconvergent_mat[4,], nonconvergent_mat[5,], nonconvergent_mat[6,], nonconvergent_mat[7,], nonconvergent_mat[8,])
+                                       )
+
+nonconvergent_ks_data <- data.frame(Test = as.factor(rep(c("KCI", "GCM", "KCI", "GCM", "KCI", "GCM", "KCI", "GCM"), 2)),
+                                func = as.factor(rep(c(rep("Nonconv1", 2), rep("Nonconv2", 2), rep("Nonconv3", 2), rep("Nonconv4", 2)),2 )),
+                                Statistic = as.factor(c(rep("K-S Statistic", 8), rep("K-S p-value", 8))),
+                                ks = c(nonconvergent_ks[,1], nonconvergent_ks[,4]),
+                                lower_ks= c(nonconvergent_ks[,2], nonconvergent_ks[,4]),
+                                upper_ks = c(nonconvergent_ks[,3], nonconvergent_ks[,4])
+                                       )
+nonconvergent_rej_data <- data.frame(Test = as.factor(c("KCI", "GCM", "KCI", "GCM", "KCI", "GCM", "KCI", "GCM")),
+                                func = as.factor(c(rep("Nonconv1", 2), rep("Nonconv2", 2), rep("Nonconv3", 2), rep("Nonconv4", 2))),
+                                rej_rate = c(nonconvergent_rej[,2]),
+                                lower_rej = c(nonconvergent_rej[,1]),
+                                upper_rej = c(nonconvergent_rej[,3])
+                                )
+```
+
+
+```{r}
+#Plotting and saving
+d1 <- ggplot(data = nonconvergent_pvalues, aes(x = p_values))+ 
+  geom_histogram(binwidth = 0.05, color = "white", boundary = 0) + 
+  labs(x = 'p-values', y = 'Count') + 
+  facet_grid(func ~ Test)
+d1
+
+d2 <- ggplot(nonconvergent_ks_data, aes(x = func, y = ks, color = Test, shape = Statistic, group = interaction(Test, Statistic))) + 
+   labs(x = 'Function', y = 'K-S Statistic/p-value') + 
+   geom_pointrange(aes(ymin = lower_ks, ymax = upper_ks), size = 0.45) +
+   scale_colour_manual(values = c('#003f5c','#bc5090')) +
+   scale_shape_manual(values = c(18,10)) +
+   theme(legend.position = "right") +
+   annotate('rect', xmin=-Inf, xmax=Inf, ymin=-Inf, ymax=0.05, alpha=.5, fill='grey') +
+   geom_hline(yintercept = 0.05, size = 0.3)
+d2
+
+ggsave('KCIbad.png', d2, 'png')
+```
+
